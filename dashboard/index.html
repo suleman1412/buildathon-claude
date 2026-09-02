@@ -9,13 +9,107 @@
 <body>
   <div class="wrap">
     <header>
-      <div>
-        <h1>AI Research Paper Validator <span>/ run history</span></h1>
-        <div class="subtitle">Claimed vs. reproduced metrics, per paper</div>
+      <div class="brand">
+        <div class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 12l2 2 4-4" />
+            <circle cx="12" cy="12" r="9" />
+          </svg>
+        </div>
+        <div>
+          <h1>AI Research Paper Validator <span class="dim">/ run history</span></h1>
+          <div class="subtitle">Claimed vs. reproduced metrics, per paper</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle light/dark theme">
+          <svg id="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+        </button>
+        <button class="icon-btn" id="refresh-btn" title="Refresh" aria-label="Refresh run data">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 2v6h-6" /><path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+            <path d="M3 22v-6h6" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+          </svg>
+        </button>
       </div>
     </header>
 
+    <section class="how">
+      <div class="how-head">
+        <div class="how-eyebrow">How it works</div>
+        <p class="how-copy">
+          For each paper, an LLM reads the PDF to find its code repo and headline claim, clones the repo,
+          then writes a shell command to reproduce the result. If that command fails or its output doesn't
+          match, the same LLM reads the error and patches its own attempt — up to five times — before the
+          reproduced number is checked against the paper's claim.
+        </p>
+      </div>
+      <figure class="diagram-figure">
+        <svg viewBox="0 0 960 210" role="img" aria-label="Pipeline: a paper PDF is read by an LLM to extract its repo and claim, the repo is cloned and installed, the LLM proposes and runs an eval command that retries itself on failure up to five times via a debug loop, then the result is verified against the claimed metric." class="diagram">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- forward flow -->
+          <line x1="150" y1="62" x2="193" y2="62" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.55" />
+          <text x="171" y="52" text-anchor="middle" class="d-arrow-label">reads text</text>
+
+          <line x1="345" y1="62" x2="388" y2="62" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.55" />
+          <text x="366" y="52" text-anchor="middle" class="d-arrow-label">repo url</text>
+
+          <line x1="540" y1="62" x2="583" y2="62" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.55" />
+          <text x="561" y="52" text-anchor="middle" class="d-arrow-label">installed</text>
+
+          <line x1="735" y1="62" x2="778" y2="62" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.55" />
+          <text x="757" y="52" text-anchor="middle" class="d-arrow-label">a number</text>
+
+          <!-- step 1: paper -->
+          <rect x="10" y="30" width="140" height="64" rx="10" class="d-box" />
+          <text x="80" y="55" text-anchor="middle" class="d-title">Paper PDF</text>
+          <text x="80" y="72" text-anchor="middle" class="d-sub">title + claimed result</text>
+
+          <!-- step 2: extract (LLM) -->
+          <rect x="195" y="30" width="150" height="64" rx="10" class="d-box d-llm" />
+          <text x="270" y="49" text-anchor="middle" class="d-chip">LLM</text>
+          <text x="270" y="66" text-anchor="middle" class="d-title">Extract claim</text>
+          <text x="270" y="83" text-anchor="middle" class="d-sub">repo · dataset · metric</text>
+
+          <!-- step 3: clone -->
+          <rect x="390" y="30" width="150" height="64" rx="10" class="d-box" />
+          <text x="465" y="55" text-anchor="middle" class="d-title">Clone &amp; install</text>
+          <text x="465" y="72" text-anchor="middle" class="d-sub">git clone + pip install</text>
+
+          <!-- step 4: propose + run (LLM), with retry loop -->
+          <rect x="585" y="30" width="150" height="64" rx="10" class="d-box d-llm" />
+          <text x="660" y="49" text-anchor="middle" class="d-chip">LLM</text>
+          <text x="660" y="66" text-anchor="middle" class="d-title">Propose &amp; run</text>
+          <text x="660" y="83" text-anchor="middle" class="d-sub">writes the eval command</text>
+
+          <path d="M 618,94 L 618,132 L 702,132 L 702,94" fill="none" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrow)" class="d-loop" />
+          <text x="660" y="150" text-anchor="middle" class="d-loop-label">fails → LLM patches → retry (≤5×)</text>
+
+          <!-- step 5: verify -->
+          <rect x="780" y="30" width="150" height="64" rx="10" class="d-box" />
+          <text x="855" y="55" text-anchor="middle" class="d-title">Verify</text>
+          <text x="855" y="72" text-anchor="middle" class="d-sub">± 5% of claimed value</text>
+        </svg>
+        <figcaption class="diagram-caption">Every run below followed this exact loop — including the retries.</figcaption>
+      </figure>
+    </section>
+
     <div class="stats" id="stats"></div>
+
+    <div class="filter-bar">
+      <div class="segmented" id="filter-segmented">
+        <button data-filter="all" class="active">All</button>
+        <button data-filter="pass">Passed</button>
+        <button data-filter="fail">Failed</button>
+      </div>
+      <div class="result-count" id="result-count"></div>
+    </div>
+
     <div class="runs" id="runs"></div>
 
     <footer>Reads dashboard/data/runs.json, written by validate.py after each run.</footer>

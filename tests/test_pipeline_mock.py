@@ -43,7 +43,7 @@ class TestJSONRepair(unittest.TestCase):
 
 def _fake_anthropic_response(text: str, input_tokens: int, output_tokens: int):
     response = unittest.mock.MagicMock()
-    response.content = [unittest.mock.MagicMock(text=text)]
+    response.content = [unittest.mock.MagicMock(type="text", text=text)]
     response.usage.input_tokens = input_tokens
     response.usage.output_tokens = output_tokens
     return response
