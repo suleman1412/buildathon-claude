@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Optional
+
 from .config import Config
+from .debug_loop import run_with_debug_loop
+from .execution import propose_run_plan, truncate_log
 from .extraction import extract_claim
 from .hf_eval import HFEvalError, run_hf_eval
 from .llm_client import LLMClient
@@ -8,52 +13,59 @@ from .pdf_extract import extract_text
 from .verification import VerificationResult, verify
 
 
-def run_pipeline(pdf_path: str, llm: LLMClient, config: Config) -> VerificationResult:
-    """v0 scope: Hugging Face Hub-native reproduction only. Cloning
-    arbitrary GitHub repos and guessing a shell command to run them
-    (src/provisioning.py, src/execution.py, src/debug_loop.py -- kept in
-    the codebase, not deleted) turned out unreliable in practice across
-    every paper tried (LoRA, DistilBERT, fastText all hit real
-    environment/dependency archaeology). This path instead uses a fixed,
-    tested eval harness (src/hf_eval.py) against a HF Hub model + dataset
-    -- no cloning, no guessed commands, no third-party 2021-era code."""
+def run_pipeline(
+    pdf_path: str, llm: LLMClient, config: Config, repo_url_override: Optional[str] = None
+) -> VerificationResult:
     paper_text = extract_text(pdf_path)
     claim = extract_claim(llm, paper_text)
 
-    if not claim.hf_model_id or not claim.hf_dataset_id:
-        return VerificationResult(
-            claim, None, False,
-            "No Hugging Face Hub model/dataset identified for this claim -- "
-            "v0 only reproduces claims backed by a HF Hub model + `datasets` "
-            "entry (not arbitrary GitHub repos). "
-            f"hf_model_id={claim.hf_model_id!r}, hf_dataset_id={claim.hf_dataset_id!r}",
-        )
+    if repo_url_override:
+        # e.g. a slide deck or paper that describes its own results without
+        # linking its own repo in the text -- extraction has nothing to find
+        claim.github_repo = repo_url_override
+
+    if not claim.github_repo:
+        return VerificationResult(claim, None, False, "No GitHub repo found in the paper; cannot reproduce.")
+
+    workdir = Path(config.workdir) / Path(pdf_path).stem
+    repo_dir = workdir / "repo"
 
     try:
-        eval_result = run_hf_eval(
-            model_id=claim.hf_model_id,
-            dataset_id=claim.hf_dataset_id,
-            dataset_config=claim.hf_dataset_config,
-            dataset_split=claim.hf_dataset_split,
-            text_field=claim.text_field,
-            label_field=claim.label_field,
-            metric_name=_normalize_metric_name(claim.claimed_metric_name),
-            max_examples=config.hf_eval_max_examples,
+        clone_repo(claim.github_repo, repo_dir)
+        install_requirements(repo_dir)
+    except ProvisioningError as e:
+        return VerificationResult(claim, None, False, f"Provisioning failed: {e}")
+
+    plan = propose_run_plan(llm, repo_dir, claim.dataset, claim.claimed_metric_name)
+    result, final_command, final_metric_regex, reproduced_value = run_with_debug_loop(
+        llm, plan.command, plan.metric_regex, repo_dir,
+        max_retries=config.max_runtime_retries,
+        truncate_lines=config.log_truncate_lines,
+        timeout_sec=config.subprocess_timeout_sec,
+        claimed_metric_name=claim.claimed_metric_name,
+    )
+
+    if result.returncode != 0:
+        # commands sometimes redirect their own stderr into stdout (e.g. "cmd
+        # 2>&1"), so show both -- stderr alone can be silently empty then
+        stderr_tail = truncate_log(result.stderr, config.log_truncate_lines)
+        stdout_tail = truncate_log(result.stdout, config.log_truncate_lines)
+        reason = (
+            f"Evaluation script failed after retries (exit code {result.returncode}).\n\n"
+            f"Command tried: `{final_command}`\n\n"
+            f"Stderr (tail):\n```\n{stderr_tail}\n```\n\n"
+            f"Stdout (tail):\n```\n{stdout_tail}\n```"
         )
-    except HFEvalError as e:
-        return VerificationResult(claim, None, False, f"HF eval failed: {e}")
+        return VerificationResult(claim, None, False, reason)
 
-    reason_suffix = f" (evaluated on {eval_result.n_examples} examples)"
-    result = verify(claim, eval_result.metric_value, config.metric_tolerance_relative)
-    return VerificationResult(result.claim, result.reproduced_value, result.passed, result.reason + reason_suffix)
+    if reproduced_value is None:
+        stdout_tail = truncate_log(result.stdout, config.log_truncate_lines)
+        reason = (
+            f"Command ran successfully but no metric matched after retries.\n\n"
+            f"Command tried: `{final_command}`\n\n"
+            f"metric_regex tried: `{final_metric_regex}`\n\n"
+            f"Stdout (tail):\n```\n{stdout_tail}\n```"
+        )
+        return VerificationResult(claim, None, False, reason)
 
-
-def _normalize_metric_name(name: str) -> str:
-    """Map a claimed metric name to a HF `evaluate` metric id."""
-    key = name.strip().lower()
-    return {
-        "accuracy": "accuracy",
-        "acc": "accuracy",
-        "f1": "f1",
-        "f1-score": "f1",
-    }.get(key, "accuracy")
+    return verify(claim, reproduced_value, config.metric_tolerance_relative)

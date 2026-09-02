@@ -42,9 +42,42 @@ def _escape_stray_backslashes(s: str) -> str:
     return re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", s)
 
 
+def _extract_balanced_objects(raw: str) -> list[str]:
+    """Find every top-level {...} span via brace counting (not greedy regex,
+    which mashes multiple objects in the text into one invalid span). Skips
+    braces inside string literals so quoted '}' doesn't miscount."""
+    objects = []
+    depth = 0
+    start = None
+    in_string = False
+    escape = False
+    for i, ch in enumerate(raw):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    objects.append(raw[start : i + 1])
+    return objects
+
+
 def _parse_json_loose(raw: str) -> dict:
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    candidates = [raw] + ([match.group(0)] if match else [])
+    # Prefer the LAST balanced object: models that ramble tend to correct
+    # themselves and give their final answer last.
+    candidates = list(reversed(_extract_balanced_objects(raw))) + [raw]
     candidates += [_escape_stray_backslashes(c) for c in candidates]
     for candidate in candidates:
         try:
@@ -115,12 +148,15 @@ class AnthropicLLMClient(LLMClient):
     model="claude-sonnet-5" explicitly for a specific hard-debugging
     attempt, not as the default.
 
-    Enforces a hard per-instance spend cap (default $2, generous relative
-    to the ~$0.02-0.08/run this pipeline normally costs -- see
+    Enforces a hard per-instance spend cap (default $4 -- raised from an
+    initial $2 once real usage data showed actual runs cost ~$0.005-0.02
+    even with retries, and the session moved to experimenting with Sonnet
+    at ~3x Haiku's per-token rate; still generous headroom relative to the
+    ~$0.02-0.08/run this pipeline normally costs -- see
     validator_project_summary.md's own cost table) using the *actual*
     token usage the API returns, not an estimate from prompt length. This
     catches a runaway retry loop or unexpectedly huge context before it
-    can eat a meaningful chunk of a $50 budget. Rates below are
+    can eat a meaningful chunk of a $49 budget. Rates below are
     approximate placeholders -- check console.anthropic.com/settings/billing
     for current pricing if the exact number matters.
     """
@@ -136,7 +172,7 @@ class AnthropicLLMClient(LLMClient):
         self,
         model: str = "claude-haiku-4-5-20251001",
         api_key: str | None = None,
-        max_spend_usd: float = 2.0,
+        max_spend_usd: float = 4.0,
     ):
         import anthropic  # lazy import: only required for this backend
 
@@ -157,13 +193,26 @@ class AnthropicLLMClient(LLMClient):
             max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
-            temperature=0.1,
+            # thinking disabled: models with it on by default (e.g. claude-sonnet-5)
+            # can burn the entire max_tokens budget on thinking and leave zero
+            # room for the actual answer (a response with only a ThinkingBlock,
+            # no text at all) -- these calls just need a direct JSON answer, no
+            # exposed reasoning needed
+            thinking={"type": "disabled"},
+            # no explicit temperature: newer models reject it outright
+            # ("temperature is deprecated for this model")
         )
         in_rate, out_rate = self._RATES_USD_PER_MTOK.get(self._model, self._DEFAULT_RATE)
         self.spend_usd += (
             response.usage.input_tokens * in_rate + response.usage.output_tokens * out_rate
         ) / 1_000_000
-        return response.content[0].text
+        # some models (e.g. claude-sonnet-5) can emit a ThinkingBlock before
+        # the TextBlock -- content[0] isn't reliably the answer, so find the
+        # actual text block(s) instead of assuming position
+        text_blocks = [block.text for block in response.content if block.type == "text"]
+        if not text_blocks:
+            raise ValueError(f"No text block in response.content: {response.content!r}")
+        return "".join(text_blocks)
 
 
 def get_llm_client(backend: str, **kwargs) -> LLMClient:

@@ -73,5 +73,5 @@ class ExtractedClaim:
 
 def extract_claim(llm: LLMClient, paper_text: str) -> ExtractedClaim:
     user_prompt = f"Paper text:\n\n{paper_text}"
-    data = llm.complete_json(SYSTEM_PROMPT, user_prompt, max_tokens=800)
+    data = llm.complete_json(SYSTEM_PROMPT, user_prompt, max_tokens=2000)
     return ExtractedClaim.from_dict(data)

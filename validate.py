@@ -30,10 +30,14 @@ def main() -> int:
     parser.add_argument("--model-path", help="Path to GGUF model file (required for --backend llama_cpp)")
     parser.add_argument("--model", help="Model name (--backend anthropic only; default claude-haiku-4-5-20251001)")
     parser.add_argument(
-        "--max-spend-usd", type=float, default=2.0,
-        help="Hard spend cap for this run, --backend anthropic only (default $2)",
+        "--max-spend-usd", type=float, default=4.0,
+        help="Hard spend cap for this run, --backend anthropic only (default $4)",
     )
     parser.add_argument("--out", default="report.md", help="Where to write the markdown report")
+    parser.add_argument(
+        "--repo-url",
+        help="Override the paper's code repo URL (use when the PDF doesn't link its own repo, e.g. a slide deck)",
+    )
     parser.add_argument(
         "--no-dashboard", action="store_true",
         help="Skip appending this run to dashboard/data/runs.json",
@@ -55,7 +59,7 @@ def main() -> int:
     config = Config()
 
     try:
-        result = run_pipeline(args.pdf_path, llm, config)
+        result = run_pipeline(args.pdf_path, llm, config, repo_url_override=args.repo_url)
     except SpendCapExceeded as e:
         print(f"STOPPED: {e}")
         return 2
@@ -64,9 +68,12 @@ def main() -> int:
             print(f"Estimated spend this run: ${llm.spend_usd:.4f}")
 
     report = result.to_markdown()
-    print(report)
-    with open(args.out, "w") as f:
+    # write the file before printing -- paper text can contain non-ASCII
+    # (accents, math symbols) that crashes print() on a non-UTF-8 console
+    # (e.g. Windows' default codepage); the report must not be lost either way
+    with open(args.out, "w", encoding="utf-8") as f:
         f.write(report)
+    print(report.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(sys.stdout.encoding or "utf-8"))
 
     if not args.no_dashboard:
         record_run(
