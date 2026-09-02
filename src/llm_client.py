@@ -8,7 +8,9 @@ Swap backends via `get_llm_client(backend, ...)`:
                  llama-cpp-python. Intended to run ONLY inside the
                  Kaggle/Colab notebook (notebooks/kaggle_colab_runner.ipynb),
                  where a GPU and enough RAM are available.
-  - "anthropic": Claude API (claude-sonnet-5 by default). Reads
+  - "anthropic": Claude API. Defaults to Haiku (cheap) and a $2/instance
+                 spend cap -- pass model="claude-sonnet-5" for a specific
+                 hard-debugging attempt, not as the default. Reads
                  ANTHROPIC_API_KEY from the environment unless api_key is
                  passed explicitly. Needs `pip install anthropic`.
 
@@ -98,18 +100,58 @@ class LlamaCppLLMClient(LLMClient):
         return result["choices"][0]["message"]["content"]
 
 
+class SpendCapExceeded(RuntimeError):
+    pass
+
+
 class AnthropicLLMClient(LLMClient):
     """Claude API. anthropic is imported lazily so this module stays
     importable without the package installed until this backend is
-    actually selected."""
+    actually selected.
 
-    def __init__(self, model: str = "claude-sonnet-5", api_key: str | None = None):
+    Defaults to Haiku (cheap) rather than Sonnet -- with a single API key
+    for a time-boxed build session, cost discipline matters more than
+    squeezing out extra reasoning quality on every call. Pass
+    model="claude-sonnet-5" explicitly for a specific hard-debugging
+    attempt, not as the default.
+
+    Enforces a hard per-instance spend cap (default $2, generous relative
+    to the ~$0.02-0.08/run this pipeline normally costs -- see
+    validator_project_summary.md's own cost table) using the *actual*
+    token usage the API returns, not an estimate from prompt length. This
+    catches a runaway retry loop or unexpectedly huge context before it
+    can eat a meaningful chunk of a $50 budget. Rates below are
+    approximate placeholders -- check console.anthropic.com/settings/billing
+    for current pricing if the exact number matters.
+    """
+
+    _RATES_USD_PER_MTOK = {  # (input, output)
+        "claude-haiku-4-5-20251001": (1.00, 5.00),
+        "claude-sonnet-5": (3.00, 15.00),
+        "claude-opus-5": (15.00, 75.00),
+    }
+    _DEFAULT_RATE = (3.00, 15.00)  # used for any model name not in the table above
+
+    def __init__(
+        self,
+        model: str = "claude-haiku-4-5-20251001",
+        api_key: str | None = None,
+        max_spend_usd: float = 2.0,
+    ):
         import anthropic  # lazy import: only required for this backend
 
         self._client = anthropic.Anthropic(api_key=api_key)  # falls back to ANTHROPIC_API_KEY env var
         self._model = model
+        self._max_spend_usd = max_spend_usd
+        self.spend_usd = 0.0  # cumulative for this instance's lifetime; public so callers can log it
 
     def complete(self, system_prompt: str, user_prompt: str, max_tokens: int = 1024) -> str:
+        if self.spend_usd >= self._max_spend_usd:
+            raise SpendCapExceeded(
+                f"AnthropicLLMClient spend cap hit: ~${self.spend_usd:.4f} >= "
+                f"${self._max_spend_usd:.2f} cap. Stopping before another API call. "
+                f"Pass a higher max_spend_usd if this run genuinely needs more."
+            )
         response = self._client.messages.create(
             model=self._model,
             max_tokens=max_tokens,
@@ -117,6 +159,10 @@ class AnthropicLLMClient(LLMClient):
             messages=[{"role": "user", "content": user_prompt}],
             temperature=0.1,
         )
+        in_rate, out_rate = self._RATES_USD_PER_MTOK.get(self._model, self._DEFAULT_RATE)
+        self.spend_usd += (
+            response.usage.input_tokens * in_rate + response.usage.output_tokens * out_rate
+        ) / 1_000_000
         return response.content[0].text
 
 
@@ -132,7 +178,8 @@ def get_llm_client(backend: str, **kwargs) -> LLMClient:
         )
     if backend == "anthropic":
         return AnthropicLLMClient(
-            model=kwargs.get("model", "claude-sonnet-5"),
+            model=kwargs.get("model", "claude-haiku-4-5-20251001"),
             api_key=kwargs.get("api_key"),
+            max_spend_usd=kwargs.get("max_spend_usd", 2.0),
         )
     raise ValueError(f"Unknown LLM backend: {backend!r}")

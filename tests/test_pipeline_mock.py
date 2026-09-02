@@ -11,6 +11,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.config import Config
 from src.execution import extract_metric
 from src.extraction import ExtractedClaim, extract_claim
-from src.llm_client import MockLLMClient, _parse_json_loose
+from src.llm_client import AnthropicLLMClient, MockLLMClient, SpendCapExceeded, _parse_json_loose
 from src.pipeline import run_pipeline
 from src.verification import verify
 
@@ -37,6 +38,38 @@ class TestJSONRepair(unittest.TestCase):
         raw = '{"title": "Fine", "claimed_metric_value": 1.0}'
         result = _parse_json_loose(raw)
         self.assertEqual(result["title"], "Fine")
+
+
+def _fake_anthropic_response(text: str, input_tokens: int, output_tokens: int):
+    response = unittest.mock.MagicMock()
+    response.content = [unittest.mock.MagicMock(text=text)]
+    response.usage.input_tokens = input_tokens
+    response.usage.output_tokens = output_tokens
+    return response
+
+
+class TestAnthropicSpendCap(unittest.TestCase):
+    def _make_client(self, max_spend_usd, input_tokens, output_tokens):
+        client = AnthropicLLMClient(model="claude-haiku-4-5-20251001", api_key="fake", max_spend_usd=max_spend_usd)
+        client._client.messages.create = unittest.mock.MagicMock(
+            return_value=_fake_anthropic_response("ok", input_tokens, output_tokens)
+        )
+        return client
+
+    def test_tracks_spend_and_allows_calls_under_cap(self):
+        client = self._make_client(max_spend_usd=2.0, input_tokens=1000, output_tokens=1000)
+        client.complete("sys", "user")
+        # haiku rates: (1.00, 5.00) per Mtok -> 1000*1.00/1e6 + 1000*5.00/1e6 = 0.000006
+        self.assertGreater(client.spend_usd, 0)
+        self.assertLess(client.spend_usd, 2.0)
+
+    def test_raises_before_next_call_once_cap_hit(self):
+        # Huge output token count on a low cap -> first call pushes spend over the cap.
+        client = self._make_client(max_spend_usd=0.001, input_tokens=100_000, output_tokens=100_000)
+        client.complete("sys", "user")  # this call is allowed to complete
+        self.assertGreater(client.spend_usd, 0.001)
+        with self.assertRaises(SpendCapExceeded):
+            client.complete("sys", "user")  # blocked before making another API call
 
 
 class TestExtraction(unittest.TestCase):
