@@ -6,31 +6,85 @@ different account, whatever — can pick up exactly where this one left off
 without re-deriving decisions or re-hitting already-solved bugs.
 
 Last updated: 2026-09-02, mid **Claude build night** (3-hour build, then
-present). Session was working on the Mac (8GB RAM); pivoting to an old
-EliteBook (32GB RAM) as the actual compute machine — see §5. A static
-presentation dashboard has been added (§5.1) but not yet deployed or
-tested against a real run. Anthropic
-API key is **pending, not yet received** — see §4.
+present), **under 2 hours left**. ~$49 of $50 credit unused (spend is not
+the constraint, time is). Anthropic API key: **received and working**
+(unlike earlier in this doc, when it was still pending).
 
 ## 0. If you're picking this up cold, read this first
 
-- **Time-boxed.** This is a 3-hour hackathon build, not an open-ended
-  project. Bias toward "get one clean end-to-end PASS on a demoable
-  paper" over "perfectly reproduce the hardest paper we tried."
-- **Budget: assume ONE Anthropic API key, ~$50.** (A teammate has a second
-  $50 key, but plan as if you only have one — don't assume the second is
-  available.) A hard per-run spend cap is already built into the code
-  (§4) — don't remove it or raise it casually.
-- **Open decision, not yet made**: whether to keep pushing on the LoRA
-  paper (blocked mid-debug, see §8) or switch to an easier paper (§9) to
-  bank a guaranteed clean demo first. Ask the user rather than assuming —
-  this was already an open question once before and got interrupted by a
-  context/infra pivot (Mac→EliteBook, local-model→Anthropic).
-- **Compute machine is changing.** Originally Kaggle/Colab GPU (for a
-  local model), now pivoting to an old EliteBook (32GB RAM, presumably no
-  GPU) reached via `git pull`, using the Anthropic API for inference
-  instead of a local model. The Kaggle notebook path (§6) still exists
-  and still works, but is no longer the primary plan — see §5.
+**MOST IMPORTANT: the execution architecture pivoted mid-session (see §0.1
+below). Sections §6, §8, §9, §10 below describe the OLD arbitrary-repo-clone
+approach, which is now DEPRECATED (code left in place, just unused by
+`pipeline.py`). Do not re-read those sections as current design — they're
+kept only as a record of what was tried and why it didn't work. §0.1 and
+§4 (as edited) describe what's actually running now.**
+
+- **Time-boxed, now urgently so.** Bias hard toward "ship one clean,
+  demoable PASS" over any further architecture exploration.
+- **Budget is not the constraint.** ~$49 of $50 left. Time is the only
+  scarce resource now.
+
+### 0.1 THE PIVOT: arbitrary-repo execution abandoned, HF-Hub-native eval only
+
+Three different papers (LoRA, DistilBERT, fastText) all hit real
+environment/dependency friction trying to clone and run their official
+repos (see §8 for the detailed LoRA blow-by-blow — DistilBERT and fastText
+failed for the same class of reason: `propose_run_plan` only sees a flat,
+truncated top-level repo listing, which is hopeless against a framework
+the size of `huggingface/transformers`). **0/3 success rate** on that
+approach. Given the time remaining, `src/pipeline.py` was rewritten to
+drop it entirely rather than keep debugging individual repos:
+
+- `src/provisioning.py`, `src/execution.py`, `src/debug_loop.py` are
+  **still in the codebase but no longer called by `pipeline.py`** — dead
+  code for now, not deleted in case there's time to revisit.
+- New: `src/hf_eval.py`'s `run_hf_eval()` — a small, fixed, WE-control-it
+  harness: `transformers.pipeline("text-classification", model=...)` +
+  `datasets.load_dataset(...)` + `evaluate.load(metric_name)`. No git
+  clone, no guessed shell command, no third-party dependency archaeology.
+  Deliberately narrow scope: single-sentence text classification only.
+- `src/extraction.py`'s `ExtractedClaim` gained `hf_model_id`,
+  `hf_dataset_id`, `hf_dataset_config`, `hf_dataset_split`, `text_field`,
+  `label_field`. If the LLM can't identify a HF Hub model+dataset for a
+  paper's claim, `run_pipeline` now fails fast with a clear reason instead
+  of attempting repo cloning.
+- **Verified working for real** (not just mocked) on the Mac, directly
+  against `src/hf_eval.py` (bypassing the full LLM-extraction pipeline,
+  just testing the harness function itself):
+  ```python
+  run_hf_eval(
+      model_id="distilbert-base-uncased-finetuned-sst-2-english",
+      dataset_id="glue", dataset_config="sst2", dataset_split="validation",
+      text_field="sentence", label_field="label", metric_name="accuracy",
+      max_examples=100,
+  )
+  # -> metric_value=94.0, n_examples=100
+  ```
+  Paper's claimed value is 91.3% — 94.0 vs 91.3 is a 2.96% relative
+  difference, well inside the default 5% tolerance, so this **would PASS**
+  through `verify()`. This is real evidence the new architecture works,
+  not just a mocked test.
+- **Two real bugs found and fixed during that verification** (would have
+  hit the EliteBook otherwise):
+  1. Modern `datasets` (5.x) no longer resolves bare legacy ids like
+     `"glue"` — needs the namespaced Hub id `"nyu-mll/glue"`. Fixed two
+     ways: the extraction prompt now explicitly asks for
+     `"namespace/name"` ids, AND `run_hf_eval` has a small hardcoded
+     fallback map (`glue` → `nyu-mll/glue`, `super_glue` → `aps/super_glue`)
+     as a safety net regardless of what the LLM emits.
+  2. `evaluate.load("accuracy")` needs `scikit-learn` installed, not
+     pulled in automatically by `transformers`/`datasets`/`evaluate`
+     themselves. Added to `requirements.txt`.
+- `requirements.txt` now includes `transformers`, `datasets`, `evaluate`,
+  `scikit-learn`, `torch` — these are real runtime deps now (compute
+  happens wherever `validate.py` runs), not optional/Kaggle-only anymore.
+  `pip install -r requirements.txt` on the EliteBook needs to complete
+  before a real run.
+- **Not yet done**: an actual end-to-end `validate.py` run (real PDF →
+  real Claude extraction → real `hf_eval` → real report), and anything
+  through the dashboard/`run_demo.sh` with real data. The verification
+  above tested the harness directly, not the full pipeline with a live
+  Anthropic call. Do that next — it's the highest-value remaining step.
 
 ## 1. What this project is
 

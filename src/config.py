@@ -8,3 +8,4 @@ class Config:
     subprocess_timeout_sec: int = 900
     metric_tolerance_relative: float = 0.05
     workdir: str = "./runs"
+    hf_eval_max_examples: int = 200  # cap eval-set size for speed; enough for a stable accuracy estimate
