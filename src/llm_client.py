@@ -8,8 +8,9 @@ Swap backends via `get_llm_client(backend, ...)`:
                  llama-cpp-python. Intended to run ONLY inside the
                  Kaggle/Colab notebook (notebooks/kaggle_colab_runner.ipynb),
                  where a GPU and enough RAM are available.
-  - "anthropic": placeholder for swapping to the Claude API once keys are
-                 available. Not implemented in v0.
+  - "anthropic": Claude API (claude-sonnet-5 by default). Reads
+                 ANTHROPIC_API_KEY from the environment unless api_key is
+                 passed explicitly. Needs `pip install anthropic`.
 
 Every pipeline stage talks to LLMClient.complete() / .complete_json() only,
 so changing the backend never touches pipeline logic.
@@ -97,6 +98,28 @@ class LlamaCppLLMClient(LLMClient):
         return result["choices"][0]["message"]["content"]
 
 
+class AnthropicLLMClient(LLMClient):
+    """Claude API. anthropic is imported lazily so this module stays
+    importable without the package installed until this backend is
+    actually selected."""
+
+    def __init__(self, model: str = "claude-sonnet-5", api_key: str | None = None):
+        import anthropic  # lazy import: only required for this backend
+
+        self._client = anthropic.Anthropic(api_key=api_key)  # falls back to ANTHROPIC_API_KEY env var
+        self._model = model
+
+    def complete(self, system_prompt: str, user_prompt: str, max_tokens: int = 1024) -> str:
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+            temperature=0.1,
+        )
+        return response.content[0].text
+
+
 def get_llm_client(backend: str, **kwargs) -> LLMClient:
     if backend == "mock":
         return MockLLMClient(kwargs.get("responses", []))
@@ -106,5 +129,10 @@ def get_llm_client(backend: str, **kwargs) -> LLMClient:
             n_ctx=kwargs.get("n_ctx", 8192),
             n_gpu_layers=kwargs.get("n_gpu_layers", -1),
             verbose=kwargs.get("verbose", False),
+        )
+    if backend == "anthropic":
+        return AnthropicLLMClient(
+            model=kwargs.get("model", "claude-sonnet-5"),
+            api_key=kwargs.get("api_key"),
         )
     raise ValueError(f"Unknown LLM backend: {backend!r}")

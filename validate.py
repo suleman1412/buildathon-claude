@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""CLI entrypoint. Intended to run inside the Kaggle/Colab notebook with a
-real (llama_cpp) LLM backend -- see notebooks/kaggle_colab_runner.ipynb.
-
-Can also run locally with --backend mock for pipeline wiring tests only
-(no model, no real repo execution)."""
+"""CLI entrypoint. Runs anywhere with Python -- e.g. on a compute machine
+(EliteBook, a server, etc.) after `git pull`. Real compute (repo clone,
+pip install, eval run) always happens wherever this script runs; model
+inference happens wherever the chosen --backend points:
+  - --backend anthropic (recommended once you have an API key): inference
+    runs on Anthropic's servers, this machine only needs Python + git + pip.
+  - --backend llama_cpp: local GGUF model on THIS machine (needs
+    llama-cpp-python + a model file -- see notebooks/kaggle_colab_runner.ipynb
+    for the Kaggle/Colab GPU path, or run it directly on a beefy local box).
+  - --backend mock: no model, no network -- wiring tests only."""
 from __future__ import annotations
 
 import argparse
@@ -17,15 +22,21 @@ from src.pipeline import run_pipeline
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate a research paper's claimed metric.")
     parser.add_argument("pdf_path", help="Path to the paper PDF")
-    parser.add_argument("--backend", choices=["llama_cpp", "mock"], default="llama_cpp")
+    parser.add_argument("--backend", choices=["anthropic", "llama_cpp", "mock"], default="anthropic")
     parser.add_argument("--model-path", help="Path to GGUF model file (required for --backend llama_cpp)")
+    parser.add_argument("--model", help="Model name (--backend anthropic only; default claude-sonnet-5)")
     parser.add_argument("--out", default="report.md", help="Where to write the markdown report")
     args = parser.parse_args()
 
     if args.backend == "llama_cpp" and not args.model_path:
         parser.error("--model-path is required for --backend llama_cpp")
 
-    kwargs = {"model_path": args.model_path} if args.backend == "llama_cpp" else {}
+    if args.backend == "llama_cpp":
+        kwargs = {"model_path": args.model_path}
+    elif args.backend == "anthropic" and args.model:
+        kwargs = {"model": args.model}
+    else:
+        kwargs = {}
     llm = get_llm_client(args.backend, **kwargs)
     config = Config()
 
