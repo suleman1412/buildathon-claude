@@ -18,11 +18,12 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config import Config
+from src.dashboard import record_run
 from src.execution import extract_metric
 from src.extraction import ExtractedClaim, extract_claim
 from src.llm_client import AnthropicLLMClient, MockLLMClient, SpendCapExceeded, _parse_json_loose
 from src.pipeline import run_pipeline
-from src.verification import verify
+from src.verification import VerificationResult, verify
 
 
 class TestJSONRepair(unittest.TestCase):
@@ -158,6 +159,48 @@ class TestFullPipelineSynthetic(unittest.TestCase):
 
         self.assertTrue(result.passed)
         self.assertAlmostEqual(result.reproduced_value, 95.05)
+
+
+class TestDashboardRecordRun(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.data_path = self.tmpdir / "dashboard" / "data" / "runs.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _claim(self):
+        return ExtractedClaim(
+            title="Test Paper", github_repo="https://github.com/x/y", dataset="sst2",
+            claimed_metric_name="accuracy", claimed_metric_value=91.5,
+            claimed_metric_unit="%", eval_notes="",
+        )
+
+    def test_creates_file_and_appends(self):
+        result = VerificationResult(self._claim(), 90.8, True, "close enough")
+        record_run(
+            result, backend="anthropic", model="claude-haiku-4-5-20251001",
+            spend_usd=0.0123, pdf_path="paper.pdf", dashboard_data_path=self.data_path,
+        )
+        record_run(
+            result, backend="anthropic", model="claude-haiku-4-5-20251001",
+            spend_usd=0.0456, pdf_path="paper.pdf", dashboard_data_path=self.data_path,
+        )
+        runs = json.loads(self.data_path.read_text())
+        self.assertEqual(len(runs), 2)
+        self.assertEqual(runs[0]["paper_title"], "Test Paper")
+        self.assertEqual(runs[1]["spend_usd"], 0.0456)
+
+    def test_never_raises_on_bad_path(self):
+        result = VerificationResult(self._claim(), 90.8, True, "close enough")
+        # a path that can't be created (parent is a file, not a dir)
+        bad_parent = self.tmpdir / "not_a_dir"
+        bad_parent.write_text("x")
+        bad_path = bad_parent / "runs.json"
+        record_run(
+            result, backend="mock", model=None, spend_usd=None,
+            pdf_path="paper.pdf", dashboard_data_path=bad_path,
+        )  # should not raise
 
 
 if __name__ == "__main__":

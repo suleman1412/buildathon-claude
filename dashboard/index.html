@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Paper Validator Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>AI Research Paper Validator <span>/ run history</span></h1>
+        <div class="subtitle">Claimed vs. reproduced metrics, per paper</div>
+      </div>
+    </header>
+
+    <div class="stats" id="stats"></div>
+    <div class="runs" id="runs"></div>
+
+    <footer>Reads dashboard/data/runs.json, written by validate.py after each run.</footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

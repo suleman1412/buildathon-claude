@@ -7,7 +7,9 @@ without re-deriving decisions or re-hitting already-solved bugs.
 
 Last updated: 2026-09-02, mid **Claude build night** (3-hour build, then
 present). Session was working on the Mac (8GB RAM); pivoting to an old
-EliteBook (32GB RAM) as the actual compute machine — see §5. Anthropic
+EliteBook (32GB RAM) as the actual compute machine — see §5. A static
+presentation dashboard has been added (§5.1) but not yet deployed or
+tested against a real run. Anthropic
 API key is **pending, not yet received** — see §4.
 
 ## 0. If you're picking this up cold, read this first
@@ -79,6 +81,9 @@ buildathon-claude/
                                    path only (llama-cpp-python, huggingface_hub)
                                    -- NOT needed for the Anthropic-backend path.
   validate.py                    CLI entrypoint. Defaults to --backend anthropic.
+                                   Appends a run record to dashboard/data/runs.json
+                                   after every run (see §5.1); disable with --no-dashboard.
+  run_demo.sh                    One-shot: run pipeline + serve dashboard. See §5.1.
   src/
     config.py                     Config dataclass: retries, timeouts, tolerance, workdir
     llm_client.py                 pluggable LLM backend -- see §4
@@ -89,14 +94,20 @@ buildathon-claude/
     debug_loop.py                 on failure: truncate stderr, ask LLM for a patch command, retry (capped)
     verification.py               compare reproduced vs. claimed metric -> VerificationResult -> markdown
     pipeline.py                   orchestrates all of the above
+    dashboard.py                   record_run() -- appends a run summary to dashboard/data/runs.json
   tests/
-    test_pipeline_mock.py         11 tests, all passing -- MockLLMClient + synthetic
-                                   script (no model/network) for pipeline wiring, plus
-                                   AnthropicLLMClient spend-cap tests with a mocked API client
+    test_pipeline_mock.py         13 tests, all passing -- MockLLMClient + synthetic
+                                   script (no model/network) for pipeline wiring,
+                                   AnthropicLLMClient spend-cap tests with a mocked API
+                                   client, and dashboard record_run() tests
   notebooks/
     kaggle_colab_runner.ipynb     Secondary path: local-model-on-Kaggle-GPU runner.
                                    Self-contained (writes out src/ itself via %%writefile).
                                    Still works, but no longer the primary plan -- see §5.
+  dashboard/
+    index.html, style.css, app.js  static presentation dashboard, see §5.1
+    data/runs.json                 run history, written by validate.py (currently [])
+    netlify.toml, README.md        deploy config + steps
 ```
 
 Run `python3 -m unittest tests.test_pipeline_mock -v` from `buildathon-claude/`
@@ -186,6 +197,41 @@ python3 validate.py path/to/paper.pdf         # --backend anthropic is the defau
 either machine — it's just text. Anything requiring an actual API call
 or a real repo-eval run should happen on the EliteBook once the key
 lands, since that's the intended compute machine going forward.
+
+### 5.1 Presentation dashboard (`dashboard/`)
+
+Static, zero-build, zero-dependency HTML/CSS/JS site for showing run
+results during the presentation. **Added this session but not yet
+exercised against a real run** — `dashboard/data/runs.json` is currently
+just `[]`.
+
+- `dashboard/index.html` + `style.css` + `app.js` — fetches
+  `data/runs.json`, renders a run-history list: PASS/FAIL badge, claimed
+  vs. reproduced metric bars, backend/model/spend, collapsible full
+  `reason` text.
+- `src/dashboard.py`'s `record_run()` — called automatically by
+  `validate.py` after every run (unless `--no-dashboard`), appends a
+  record to `dashboard/data/runs.json`. Deliberately swallows all
+  exceptions — a dashboard-write failure must never fail the actual
+  validation run. Tests: `TestDashboardRecordRun`.
+- `run_demo.sh` (repo root, executable) — the one-shot script for the
+  EliteBook: `./run_demo.sh path/to/paper.pdf` runs the pipeline then
+  serves the dashboard at `localhost:8000` (best-effort auto-opens a
+  browser via `open`/`xdg-open`). `./run_demo.sh` with no args (or
+  `--dashboard-only`) skips the pipeline and just reopens the dashboard
+  on whatever's already in `runs.json` — use this to avoid burning time
+  *and* API spend just to look at results again. Smoke-tested locally
+  (served correctly, empty-state renders correctly) — not yet tested with
+  real run data end-to-end.
+- **Deploy**: `dashboard/README.md` has exact Netlify/Vercel steps —
+  both point at `buildathon-claude/dashboard` as the base/root directory,
+  no build command. `netlify.toml` is already in place for Netlify.
+  Updating the live deployed dashboard after a new local run means
+  committing + pushing the updated `data/runs.json` (see that README).
+- **Not yet done**: an actual DistilBERT (or other) run to populate real
+  data, and an actual Netlify/Vercel deploy. Both need either the
+  Anthropic key or a manually-constructed `runs.json` record for a dry
+  run of the deploy step.
 
 ## 6. Kaggle/Colab path (secondary, kept working, not the current plan)
 

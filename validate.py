@@ -13,10 +13,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from src.config import Config
+from src.dashboard import record_run
 from src.llm_client import AnthropicLLMClient, SpendCapExceeded, get_llm_client
 from src.pipeline import run_pipeline
+
+DEFAULT_DASHBOARD_DATA = Path(__file__).parent / "dashboard" / "data" / "runs.json"
 
 
 def main() -> int:
@@ -30,6 +34,10 @@ def main() -> int:
         help="Hard spend cap for this run, --backend anthropic only (default $2)",
     )
     parser.add_argument("--out", default="report.md", help="Where to write the markdown report")
+    parser.add_argument(
+        "--no-dashboard", action="store_true",
+        help="Skip appending this run to dashboard/data/runs.json",
+    )
     args = parser.parse_args()
 
     if args.backend == "llama_cpp" and not args.model_path:
@@ -59,6 +67,16 @@ def main() -> int:
     print(report)
     with open(args.out, "w") as f:
         f.write(report)
+
+    if not args.no_dashboard:
+        record_run(
+            result,
+            backend=args.backend,
+            model=getattr(llm, "_model", None),
+            spend_usd=getattr(llm, "spend_usd", None),
+            pdf_path=args.pdf_path,
+            dashboard_data_path=DEFAULT_DASHBOARD_DATA,
+        )
 
     return 0 if result.passed else 1
 
