@@ -122,43 +122,62 @@ class TestVerify(unittest.TestCase):
 
 
 class TestFullPipelineSynthetic(unittest.TestCase):
-    def setUp(self):
-        self.tmpdir = Path(tempfile.mkdtemp())
-        self.synthetic_repo = self.tmpdir / "synthetic_repo"
-        self.synthetic_repo.mkdir()
-        (self.synthetic_repo / "eval.py").write_text("print('Final Accuracy: 95.05')\n")
+    """Tests the v0 HF-Hub-native pipeline (src/pipeline.py) -- no git clone,
+    no subprocess, no repo execution. run_hf_eval is mocked; this only
+    proves the extraction -> hf_eval -> verify wiring, not the real HF
+    inference path (that's exercised for real on the compute machine)."""
 
     def tearDown(self):
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        pass
 
     def test_pipeline_pass(self):
         extraction_response = json.dumps({
             "title": "Synthetic Paper",
-            "github_repo": "https://example.invalid/repo.git",
-            "dataset": "toy",
+            "github_repo": None,
+            "hf_model_id": "distilbert-base-uncased-finetuned-sst-2-english",
+            "hf_dataset_id": "glue",
+            "hf_dataset_config": "sst2",
+            "hf_dataset_split": "validation",
+            "text_field": "sentence",
+            "label_field": "label",
+            "dataset": "SST-2",
             "claimed_metric_name": "accuracy",
-            "claimed_metric_value": 95.1,
+            "claimed_metric_value": 91.3,
             "claimed_metric_unit": "%",
             "eval_notes": "Synthetic test.",
         })
-        run_plan_response = json.dumps({
-            "command": "python3 eval.py",
-            "metric_regex": r"Final Accuracy: ([\d.]+)",
-        })
-        llm = MockLLMClient([extraction_response, run_plan_response])
-        config = Config(workdir=str(self.tmpdir / "runs"))
+        llm = MockLLMClient([extraction_response])
+        config = Config()
 
-        def fake_clone_repo(repo_url, dest_dir, timeout_sec=300):
-            shutil.copytree(self.synthetic_repo, dest_dir)
-            return dest_dir
+        from src.hf_eval import HFEvalResult
 
-        with patch("src.pipeline.clone_repo", side_effect=fake_clone_repo), \
-             patch("src.pipeline.install_requirements", return_value=""), \
-             patch("src.pipeline.extract_text", return_value="synthetic paper text"):
+        with patch("src.pipeline.extract_text", return_value="synthetic paper text"), \
+             patch("src.pipeline.run_hf_eval", return_value=HFEvalResult(metric_value=91.0, n_examples=200)):
             result = run_pipeline("fake.pdf", llm, config)
 
         self.assertTrue(result.passed)
-        self.assertAlmostEqual(result.reproduced_value, 95.05)
+        self.assertAlmostEqual(result.reproduced_value, 91.0)
+
+    def test_pipeline_no_hf_model_found(self):
+        extraction_response = json.dumps({
+            "title": "Paper With No HF Model",
+            "github_repo": "https://github.com/x/y",
+            "hf_model_id": None,
+            "hf_dataset_id": None,
+            "claimed_metric_name": "accuracy",
+            "claimed_metric_value": 91.3,
+            "claimed_metric_unit": "%",
+            "eval_notes": "",
+        })
+        llm = MockLLMClient([extraction_response])
+        config = Config()
+
+        with patch("src.pipeline.extract_text", return_value="synthetic paper text"):
+            result = run_pipeline("fake.pdf", llm, config)
+
+        self.assertFalse(result.passed)
+        self.assertIsNone(result.reproduced_value)
+        self.assertIn("Hugging Face", result.reason)
 
 
 class TestDashboardRecordRun(unittest.TestCase):

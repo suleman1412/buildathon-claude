@@ -7,9 +7,9 @@ from .config import Config
 from .debug_loop import run_with_debug_loop
 from .execution import propose_run_plan, truncate_log
 from .extraction import extract_claim
+from .hf_eval import HFEvalError, run_hf_eval
 from .llm_client import LLMClient
 from .pdf_extract import extract_text
-from .provisioning import ProvisioningError, clone_repo, install_requirements
 from .verification import VerificationResult, verify
 
 
